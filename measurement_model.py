@@ -5,18 +5,10 @@ of the acquired data.
 """
 
 from typing import Optional, Tuple
-
-from cached_property import cached_property
 import numpy as np
-from imageio import imread
-from scipy.stats.qmc import Sobol
-from skimage.transform import resize
-from tqdm import trange
-
-from fiber_propagation import propagator
 
 
-#TODO Add an attribute to store noise variance information?
+# TODO Add an attribute to store noise variance information?
 class GIMeasurementModel:
     """
     The mathematical model of how the measurement data from the bucket detector
@@ -58,28 +50,16 @@ class GIMeasurementModel:
         The unit of pixel_size.
     """
 
-    def __init__(self, n_patterns: int, img_shape: Optional[Tuple[int, int]]=None, # pylint: disable=R0913
-                 pattern_type: str="pseudorandom", pixel_size: float=1.,
-                 unit: str="px"):
-        self.n_patterns = n_patterns
+    def __init__(self, ref_data,  # pylint: disable=R0913
+                 pattern_type: str = "pseudorandom", pixel_size: float = 1.,
+                 unit: str = "px"):
+        self.n_patterns = ref_data.shape[0]
         self.pixel_size = pixel_size
         self.unit = unit
-        if pattern_type == "speckle":
-            illum_patterns = self._load_speckle_patterns(img_shape)
-            self.img_shape = illum_patterns.shape[1:]
-        else:
-            if img_shape is None:
-                raise ValueError(
-                    "Must provide the image shape unless using speckle patterns."
-                )
-            self.img_shape = img_shape
-            if pattern_type == "pseudorandom":
-                illum_patterns = self._pseudorandom_patterns()
-            elif pattern_type == "quasirandom":
-                illum_patterns = self._quasirandom_patterns()
-        self.mt_op = illum_patterns.reshape((self.n_patterns, -1)).astype(float)
+        self.img_shape = ref_data.shape[1:]
+        self.mt_op = ref_data.reshape((self.n_patterns, -1)).astype(float)
 
-    def mt_op_part(self, n_patterns: Optional[int]=None) -> np.ndarray:
+    def mt_op_part(self, n_patterns: Optional[int] = None) -> np.ndarray:
         """
         Extract a part of `mt_op` corresponding to first `n_patterns` measurements.
 
@@ -98,7 +78,7 @@ class GIMeasurementModel:
             return self.mt_op
         return self.mt_op[: n_patterns, ...]
 
-    def illumination_patterns(self, n_patterns: int=None) -> np.ndarray:
+    def illumination_patterns(self, n_patterns: int = None) -> np.ndarray:
         """
         Reshapes the mt_op so that mt_op[i, ...] are the illumination patterns.
 
@@ -115,82 +95,6 @@ class GIMeasurementModel:
 
         """
         return self.mt_op[: n_patterns, ...].reshape((-1,) + self.img_shape)
-
-    def _pseudorandom_patterns(self):
-        rng = np.random.default_rng(2021)
-        #TODO Allow for non-square images
-        #TODO pass self.img_shape and self.pixel_size to pyMMF calculations
-        propagate_func = propagator(self.img_shape[0])
-        illum_patterns = rng.integers(0, 1, size=(self.n_patterns,) + self.img_shape,
-                                          endpoint=True)
-        for i in range(self.n_patterns):
-            illum_patterns[i, ...] = propagate_func(illum_patterns[i, ...])
-        return illum_patterns
-
-    def _quasirandom_patterns(self):
-        propagate_func = propagator(self.img_shape[0])
-
-        gen = Sobol(
-            self.img_shape[0]*self.img_shape[1], scramble=False, seed=2021
-        ).fast_forward(1)
-        illum_patterns = (gen.random(self.n_patterns) >= 0.5).reshape(
-            (self.n_patterns,) + self.img_shape
-        ).astype(int)
-
-        for i in range(self.n_patterns):
-            illum_patterns[i, ...] = propagate_func(illum_patterns[i, ...])
-        return illum_patterns
-
-    def _load_speckle_patterns(self, img_shape):
-        illum_patterns = []
-        try:
-            for pattern_no in trange(self.n_patterns):
-                raw_pattern = imread(f"speckle_patterns/slm{pattern_no}.bmp",
-                                     as_gray=True)
-                if img_shape is None:
-                    illum_patterns.append(raw_pattern)
-                else:
-                    illum_patterns.append(resize(raw_pattern, img_shape,
-                                                 anti_aliasing=False))
-        except FileNotFoundError as e: # pylint: disable=C0103
-            raise ValueError(
-                "Not enough speckle pattern data for {} patterns.".format(self.n_patterns)
-            ) from e
-        illum_patterns = np.array(illum_patterns)
-        return illum_patterns
-
-    @cached_property
-    def _noise_rng(self): # pylint: disable=R0201
-        return np.random.default_rng(2021) # seed is set for repeatability
-
-    def simulate_measurement(self, source_image,
-                             noise_var: float=0.) -> np.ndarray:
-        """
-        Simulate the measurement process for a given image of the studied object.
-
-        Parameters
-        ----------
-        source_image : array_like of shape img_shape
-            The image of the studied object.
-        noise_var : float, optional
-            Variance of the white noise to be added to the measurement.
-            The default is 0..
-
-        Returns
-        -------
-        measurement : ndarray of shape (n_patterns,)
-            The simulated measurement
-
-        """
-        source_image = pad_or_trim_to_shape(source_image, self.img_shape)
-
-        measurement = self.mt_op.dot(source_image.ravel())
-
-        if noise_var > 0:
-            measurement += self._noise_rng.normal(
-                scale=noise_var**0.5, size=measurement.shape
-            )
-        return measurement
 
 
 def pad_or_trim_to_shape(img, shape: Tuple[int, int]) -> np.ndarray:
@@ -214,7 +118,7 @@ def pad_or_trim_to_shape(img, shape: Tuple[int, int]) -> np.ndarray:
     if shape[0] == img.shape[0] and shape[1] == img.shape[1]:
         return img
     if (shape[0] != img.shape[0]
-        or shape[1] != img.shape[1]):
+            or shape[1] != img.shape[1]):
         to_add_0 = shape[0] - img.shape[0]
         to_add_1 = shape[1] - img.shape[1]
         if to_add_0 < 0:
@@ -256,7 +160,7 @@ class GIProcessingMethod:
     def __init__(self, model: GIMeasurementModel):
         self._measurement_model = model
 
-    def _mt_op(self, n_patterns: Optional[int]=None) -> np.ndarray:
+    def _mt_op(self, n_patterns: Optional[int] = None) -> np.ndarray:
         if n_patterns is None:
             return self._measurement_model.mt_op
         return self._measurement_model.mt_op_part(n_patterns)
@@ -279,7 +183,7 @@ class TraditionalGI(GIProcessingMethod):
     name = "gi"
     desc = "Обычное ФИ"
 
-    def __call__(self, measurement) -> np.ndarray: # pylint: disable=W0221
+    def __call__(self, measurement) -> np.ndarray:  # pylint: disable=W0221
         """
         Process the measurement using the traditional approach, that is,
         summation of the illumination patterns weighted by the corresponding
@@ -297,7 +201,8 @@ class TraditionalGI(GIProcessingMethod):
         result : numpy.ndarray
             The processing result.
         """
-        illum_patterns = self._measurement_model.illumination_patterns(measurement.size)
+        illum_patterns = self._measurement_model.illumination_patterns(
+            measurement.size)
         result = np.tensordot(measurement - measurement.mean(),
                               illum_patterns - illum_patterns.mean(axis=0),
                               axes=1)/measurement.size
